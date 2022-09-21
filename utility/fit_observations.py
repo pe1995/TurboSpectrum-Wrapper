@@ -240,6 +240,26 @@ def probability(labels, x, y, yerr, NNpath):
     else:
         return likelihood(labels, x, y, yerr, NN) + lp
 
+def getStartingEstimation(NN, nSamples = 100):
+    """
+
+    """
+    params = []
+    print(f"computing {nSamples:.0f} randomly uniformly distributed points in the ANN parameter space...")
+    for i in range(len(NNet['labelsKeys'])):
+        params.append( np.random.uniform(
+                                        min(NN['labelsKeys'][i]),
+                                        max(NN['labelsKeys'][i]),
+                                        nSamples)
+                                        )
+    params = np.array(params)
+    fluxes = np.ones( (len(params), len(NN['wvl'])) )
+    for i in range(len(params)):
+        fluxMod = restore(NN['wvl'], NN, params[i])
+        fluxes[i] = fluxMod
+    return params, fluxes
+
+
 def MCMCwithANN(NNpath, specPath):
     import emcee
 
@@ -253,6 +273,16 @@ def MCMCwithANN(NNpath, specPath):
     computedLabels = [ spec.__dict__[k] for k  in NN['labelsKeys'] ]
     w, f = spec.lam, spec.flux
     ferr = np.full(len(f), 0.01)
+
+    sampledPoints, sampledFlux = getStartingEstimation(NN, nSamples=50)
+    chi2 = np.full(len(sampledPoints), np.nan)
+    for i in len(sampledPoints):
+        fMod = np.interp(w), NN['wvl'], sampledFlux[i])
+        chi2 = np.sqrt( np.sum( (f - fMod)**2 ) )
+    pos = np.where(chi2 == max(chi2))[0][0]
+    print(f"best starting point: ")
+    print(sampledPoints[pos])
+
 
     startingPoint = ( NN['x_max'] + NN['x_min'] ) / 2.
     startingPoint = np.hstack([startingPoint, [-5]])
@@ -280,7 +310,7 @@ def MCMCwithANN(NNpath, specPath):
     i = ndim-1
     mcmc = np.percentile(flat_samples[:, i], [16, 50, 84])
     print(f"log_f = {mcmc[1]:.3f}")
-    
+
     profiler.disable()
     with open('./log_profiler.txt', 'w') as stream:
        stats = pstats.Stats(profiler, stream = stream).sort_stats('cumulative')
