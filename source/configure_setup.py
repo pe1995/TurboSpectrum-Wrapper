@@ -4,42 +4,15 @@ import shutil
 from sys import argv, exit
 import datetime
 import glob
-from scipy.spatial import Delaunay
 from scipy.interpolate import interp1d
 # local
-from model_atm_interpolation import get_all_ma_parameters, NDinterpolateGrid,preInterpolationTests
-from read_nlte import read_fullNLTE_grid, find_distance_to_point
+from model_atm_interpolation import get_all_ma_parameters, prepInterpolation_MA, interpolateAllPoints_MA,  prepInterpolation_NLTE, interpolateAllPoints_NLTE
 from atmos_package import model_atmosphere
-from read_nlte import write_departures_forTS, read_departures_forTS
+from read_nlte import write_departures_forTS, read_departures_forTS, restoreDepartScaling
 import cProfile
 import pstats
 from chemical_elements import ChemElement
 
-def in_hull(p, hull):
-    """
-    Is triangulation-based interpolation to this point possible?
-
-    Parameters
-    ----------
-    p : dict
-        point to test, contains coordinate names as keys and their values, e.g.
-        p['teff'] = 5150
-    hull :
-
-    Returns
-    -------
-    whether point is inside the hull
-    """
-    return hull.find_simplex(p) >= 0
-
-def mkdir(s):
-    if os.path.isdir(s):
-        shutil.rmtree(s)
-    os.mkdir(s)
-
-
-def restoreDepartScaling(depart, el):
-    return 10**(depart * el.DepartScaling)
 def read_random_input_parameters(file):
     """
     Read strictly formatted input parameters
@@ -106,6 +79,7 @@ on log12 scale. Please double check input file '{file}'")
     # TODO: move free parameters as a sub-dictinary of the return
     return input_par, freeParams
 
+
 class setup(object):
     """
     Describes the setup requested for computations
@@ -116,15 +90,198 @@ class setup(object):
         path to the configuration file, './config.txt' by default
 
     """
-    def __init__(self, file='./config.txt'):
+    def __init__(self, file='./config.txt', mode='MAinterpolate'):
         if 'cwd' not in self.__dict__.keys():
             self.cwd = f"{os.getcwd()}/"
         self.debug = 0
         self.ncpu  = 1
         self.nlte = 0
-        self.saveMemory = 1
+        self.safeMemory = 250 # Gb
+
+        supportModes = ['MAinterpolate', 'MAprovided']
+        if mode not in supportModes:
+            print(f"Unknown mode in setup(): supported options are {supportModes}")
+            exit()
+
+        self.read_config_file(file)
+
+        """ Any element to be treated in NLTE eventually? """
+        if 'inputParams_file' in self.__dict__:
+            for el in self.inputParams['elements'].values():
+                if el.nlte:
+                    self.nlte = True
+                    break
+
+        if 'nlte_config' not in self.__dict__ or not self.nlte:
+            print(f"{50*'*'}\n Note: all elements will be computed in LTE!\n \
+To set up NLTE, use 'nlte_config' flag\n {50*'*'}")
+
+        """ Create a directory to save spectra"""
+        # TODO: all directory creation should be done at the same time
+        today = datetime.date.today().strftime("%b-%d-%Y")
+        self.spectraDir = self.cwd + f"/spectra-{today}/"
+        if not os.path.isdir(self.spectraDir):
+            os.mkdir(self.spectraDir)
+
+        if self.nlte:
+            "Temporary directories for NLTE files"
+            for el in self.inputParams['elements'].values():
+                if el.nlte:
+                    el.departDir = self.cwd + f"/{el.ID}_nlteDepFiles/"
+                    if not  os.path.isdir(el.departDir):
+                        os.mkdir(el.departDir)
+
+            "TS needs to access model atoms from the same path for all elements"
+            if 'modelAtomsPath' not in self.__dict__.keys():
+                self.modelAtomsPath = f"{self.cwd}/modelAtoms_links/"
+                if os.path.isdir(self.modelAtomsPath):
+                    shutil.rmtree(self.modelAtomsPath)
+                os.mkdir(self.modelAtomsPath)
+
+                "Link provided model atoms to this directory"
+                for el in self.inputParams['elements'].values():
+                    if el.nlte:
+                        dst = self.modelAtomsPath + el.modelAtom.split('/')[-1]
+                        os.symlink(el.modelAtom, dst )
+
+        if mode.strip() == 'MAinterpolate':
+            """
+            All model atmospheres should exist on the same depth scale --
+            here, tau500 -- for correct interpolation
+            """
+            if 'depthScale' not in self.__dict__:
+                self.depthScaleNew = np.linspace(-5, 2, 60)
+            else: self.depthScaleNew = np.array(depthScale[0], depthScale[1], depthScale[2])
+
+            self.interpolate()
+
+        elif mode.strip() == 'MAprovided':
+            if 'atmos_path' not in self.__dict__ or 'atmos_list' not in self.__dict__:
+                print("Provide path to model atmospheres 'atmos_path' \
+and path to file listing requested model atmospheres 'atmos_list' \
+in the config file ")
+                exit()
+            self.atmos_list = np.loadtxt(self.atmos_list, ndmin=1, dtype=str)
+            self.atmos_list = np.array([ self.atmos_path + f.replace('./', self.cwd) if f.startswith('./') \
+                                    else self.atmos_path + f  for f in self.atmos_list])
+
+            if self.debug:
+                print(f"Requested {len(self.atmos_list):.0f} model atmospheres")
+            if 'atmos_format' not in self.__dict__:
+                print("Provide one of the following format keys \
+in the config file as 'atmos_format' ")
+                exit()
+
+        "Some formatting required by TS routines"
+        self.createTSinputFlags()
 
 
+    def interpolate(self):
+        """
+        Here we interpolate grids of model atmospheres and
+        grids of NLTE departures to each requested point
+        and prepare all the files (incl. writing) in advance,
+        i.e. before starting spectral computations with TS
+
+        This decision was made to ensure that interpolation will not
+        cause troubles in the middle of large expensive computations (weeks-long)
+        such as computing hundreds of thousands of model spectra for surveys
+        like 4MOST and WEAVE
+        """
+        self.interpolator = {}
+
+        """
+        Read grid of model atmospheres, conduct checks
+        and eventually interpolate to every requsted point
+
+        Model atmospheres are stored in the memory at this point
+        (self.inputParams['modelAtmInterpol'])
+        in contrast to NLTE departure coefficients,
+        which are significantly larger and more
+        NLTE departure coefficients are written to files as expected by TS
+        right after interpolation
+        """
+        self, interpolCoords = prepInterpolation_MA(self)
+        self = interpolateAllPoints_MA(self)
+        del self.interpolator['modelAtm']
+
+
+        """
+        Go over each NLTE departure grids
+        (one at a time to avoid memory overflow),
+        read, conduct checks and eventually interpolate to every requested point
+
+        Each set of departure coefficients is written in the file at this point,
+        since storing all of them in the memory is not possible
+        These files serve as input to TS 'as is' later anyways.
+
+        Departure coefficients are rescaled to the same depth scale \
+        as in each model atmosphere
+        """
+        for elID, el in self.inputParams['elements'].items():
+            if el.nlte:
+                print(el.ID)
+                search = np.full(self.inputParams['count'], False)
+                el.departFiles = np.full(self.inputParams['count'], None)
+                for i in range(len(el.abund)):
+                    departFile = el.departDir + \
+                            f"/depCoeff_{el.ID}_{el.abund[i]:.3f}_{i}.dat"
+                    el.departFiles[i] = departFile
+                    if os.path.isfile(departFile):
+                        search[i] = True
+
+                if np.array(search).all():
+                    print(f"Will re-use interpolated departure coefficients found under {el.departDir}")
+                else:
+                    self = prepInterpolation_NLTE(self, el, interpolCoords, \
+                        rescale = True, depthScale = self.depthScaleNew)
+                    self = interpolateAllPoints_NLTE(self, el)
+                    del el.nlteData
+                    del el.interpolator
+
+    def createTSinputFlags(self):
+        self.ts_input = { 'PURE-LTE':'.false.', 'MARCS-FILE':'.false.', 'NLTE':'.false.',\
+        'NLTEINFOFILE':'', 'LAMBDA_MIN':4000, 'LAMBDA_MAX':9000, 'LAMBDA_STEP':0.05,\
+         'MODELOPAC':'./OPAC', 'RESULTFILE':'' }
+
+
+        """ At what wavelenght range to compute a spectrum? """
+        self.lam_start, self.lam_end = min(self.lam_end, self.lam_start), \
+                                    max(self.lam_end, self.lam_start)
+        self.wave_step = np.mean([self.lam_start, self.lam_end]) / self.resolution
+        self.ts_input['LAMBDA_MIN'] = self.lam_start
+        self.ts_input['LAMBDA_MAX'] = self.lam_end
+        self.ts_input['LAMBDA_STEP'] = self.wave_step
+        self.ts_input['ts_root'] = self.ts_root
+
+
+        """ Linelists """
+        if type(self.linelist) == np.array or type(self.linelist) == np.ndarray:
+            pass
+        elif type(self.linelist) == str:
+            self.linelist = np.array([self.linelist])
+        else:
+            print(f"Can not understand the 'linelist' flag: {self.linelist}")
+            exit(1)
+        llFormatted = []
+        for path in self.linelist:
+            if '*' in path:
+                llFormatted.extend( glob.glob(path) )
+            else:
+                llFormatted.append(path)
+        self.linelist = llFormatted
+        if self.debug:
+            print(f"Linelist(s) will be read from: {' ; '.join(str(x) for x in self.linelist)}")
+
+        self.ts_input['NFILES'] = len(self.linelist)
+        self.ts_input['LINELIST'] = '\n'.join(self.linelist)
+
+
+        "Any element in NLTE?"
+        if self.nlte:
+            self.ts_input['NLTE'] = '.true.'
+
+    def read_config_file(self, file):
         "Read all the keys from the config file"
         for line in open(file, 'r').readlines():
             line = line.strip()
@@ -153,13 +310,10 @@ class setup(object):
                     self.__dict__[k].append(val)
 
         if 'inputParams_file' in self.__dict__:
-            self.inputParams, self.freeInputParams = read_random_input_parameters(self.inputParams_file)
-        else:
-            print("Missing file with input parameters: inputParams_file")
+            self.inputParams, self.freeInputParams =\
+             read_random_input_parameters(self.inputParams_file)
 
         if 'nlte_config' in self.__dict__:
-            """ Read provided NLTE grids and model atoms
-             and match to the elements requested in the input file"""
             for l in self.nlte_config:
                 l = l.replace('[','').replace(']','').replace("'","")
                 elID, files = l.split(':')[0].strip().capitalize(),\
@@ -171,399 +325,10 @@ class setup(object):
 
                 if (elID not in self.inputParams['elements']) and self.debug:
                     print(f"NLTE data is provided for {elID}, \
-but it is not a free parameter in the input file {self.inputParams_file}.")
+    but it is not a free parameter in the input file {self.inputParams_file}.")
                 else:
                     el = self.inputParams['elements'][elID]
                     el.nlte = True
                     el.nlteGrid = files[0]
                     el.nlteAux = files[1]
                     el.modelAtom = files[2]
-
-            "TS needs to access model atoms from the same path for all elements"
-            if 'modelAtomsPath' not in self.__dict__.keys():
-                self.modelAtomsPath = f"{self.cwd}/modelAtoms_links/"
-                mkdir(self.modelAtomsPath)
-                "Link provided model atoms to this directory"
-                for el in self.inputParams['elements'].values():
-                    if el.nlte:
-                        dst = self.modelAtomsPath + el.modelAtom.split('/')[-1]
-                        os.symlink(el.modelAtom, dst )
-
-        """ Any element to be treated in NLTE eventually? """
-        for el in self.inputParams['elements'].values():
-            if el.nlte:
-                self.nlte = True
-                break
-
-        if 'nlte_config' not in self.__dict__ or not self.nlte:
-            print(f"{50*'*'}\n Note: all elements will be computed in LTE!\n \
-To set up NLTE, use 'nlte_config' flag\n {50*'*'}")
-
-        """ Create a directory to save spectra"""
-        # TODO: all directory creation should be done at the same time
-        today = datetime.date.today().strftime("%b-%d-%Y")
-        self.spectraDir = self.cwd + f"/spectra-{today}/"
-        if not os.path.isdir(self.spectraDir):
-            os.mkdir(self.spectraDir)
-
-# TODO: write model atmospheres to files Here
-# than if no interpolation is required, those files can be passed directly to TS
-
-
-        "Temporary directories for NLTE files"
-        for el in self.inputParams['elements'].values():
-            if el.nlte:
-                el.departDir = self.cwd + f"/{el.ID}_nlteDepFiles/"
-                if not  os.path.isdir(el.departDir):
-                    os.mkdir(el.departDir)
-
-        if 'depthScale' not in self.__dict__:
-            self.depthScaleNew = np.linspace(-5, 2, 60)
-        else: self.depthScaleNew = np.array(depthScale[0], depthScale[1], depthScale[2])
-
-        self.interpolate()
-
-        "Some formatting required by TS routines"
-        self.createTSinputFlags()
-
-
-    def interpolate(self):
-        """
-        Here we interpolate grids of model atmospheres and
-        grids of NLTE departures to each requested point
-        and prepare all the files (incl. writing) in advance,
-        i.e. before starting spectral computations with TS
-
-        This decision was made to ensure that interpolation will not
-        cause troubles in the middle of large expensive computations
-        such as computing hundreds of thousands of model spectra for surveys
-        like 4MOST and WEAVE
-        """
-        self.interpolator = {}
-
-        """
-        Read grid of model atmospheres, conduct checks
-        and eventually interpolate to every requsted point
-
-        Model atmospheres are stored in the memory at this point
-        (self.inputParams['modelAtmInterpol'])
-        in contrast to NLTE departure coefficients,
-        which are significantly large
-        """
-        interpolCoords = self.prepInterpolation_MA()
-        self.interpolateAllPoints_MA()
-        del self.interpolator['modelAtm']
-
-
-        """
-        Go over each NLTE departure grids
-        (one at a time to avoid memory overflow),
-        read, conduct checks and eventually interpolate to every requested point
-
-        Each set of departure coefficients is written in the file at this point,
-        since storing all of them in the memory is not possible
-        These files serve as input to TS 'as is' later anyways.
-
-        Departure coefficients are rescaled to the same depth scale \
-        as in each model atmosphere
-        """
-        for elID, el in self.inputParams['elements'].items():
-            if el.nlte:
-                print(el.ID)
-                self.prepInterpolation_NLTE(el, interpolCoords, \
-                    rescale = True, depthScale = self.depthScaleNew)
-                self.interpolateAllPoints_NLTE(el)
-                del el.nlteData
-                del el.interpolator
-# TODO: move the four routines below into model_atm_interpolation
-
-    def prepInterpolation_MA(self):
-        """
-        Read grid of model atmospheres and NLTE grids of departures
-        and prepare interpolating functions
-        Store for future use
-        """
-
-        " Over which parameters (== coordinates) to interpolate?"
-        interpolCoords = ['teff', 'logg', 'feh'] # order should match input file!
-        if 'vturb' in self.inputParams:
-            interpolCoords.append('vturb')
-
-        "Model atmosphere grid"
-        if self.debug: print("preparing model atmosphere interpolator...")
-        modelAtmGrid = get_all_ma_parameters(self.atmos_path,  self.depthScaleNew,\
-                                        format = self.atmos_format, debug=self.debug)
-        passed  = preInterpolationTests(modelAtmGrid, interpolCoords, \
-                                        valueKey='structure', dataLabel = 'model atmosphere grid' )
-        if not passed:
-            exit()
-        interpFunction, normalisedCoord = NDinterpolateGrid(modelAtmGrid, interpolCoords, \
-                                        valueKey='structure', dataLabel = 'model atmosphere grid' )
-        """
-        Create hull object to test whether each of the requested points
-        are within the original grid
-        Interpolation outside of hull returns NaNs, therefore skip those points
-        """
-        hull = Delaunay(np.array([ modelAtmGrid[k] / normalisedCoord[k] for k in interpolCoords ]).T)
-
-        self.interpolator['modelAtm'] = {'interpFunction' : interpFunction, \
-                                        'normCoord' : normalisedCoord, \
-                                        'hull': hull}
-        del modelAtmGrid
-        return interpolCoords
-
-
-    def prepInterpolation_NLTE(self, el, interpolCoords, rescale = False, depthScale = None):
-        """
-        Read grid of departure coefficients
-        in nlteData 0th element is tau, 1th--Nth are departures for N levels
-        """
-        if self.debug:
-            print(f"reading grid {el.nlteGrid}...")
-
-        el.nlteData = read_fullNLTE_grid( el.nlteGrid, el.nlteAux, \
-                                    rescale=rescale, depthScale = depthScale, saveMemory = self.saveMemory )
-                                    #rescale=False, depthScale = depthScale, saveMemory = self.saveMemory )
-        el.comment += el.nlteData['comment']
-        del el.nlteData['comment']
-
-        """ Scaling departure coefficients for the most efficient interpolation """
-        pos = np.isnan(np.log10(el.nlteData['depart']+ 1.e-20))
-        print(f"{np.sum(pos)} points become NaN under log10")
-
-        el.nlteData['depart'] = np.log10(el.nlteData['depart']+ 1.e-20)
-        pos = np.where(np.isnan(el.nlteData['depart']))
-
-        el.DepartScaling = np.max(np.max(el.nlteData['depart'], axis=1), axis=0)
-        el.nlteData['depart'] = el.nlteData['depart'] / el.DepartScaling
-
-        # """ Stack departure coefficients and depth scale for consistent interpolation """
-        # el.nlteData['departNew'] = np.full((np.shape(el.nlteData['depart'])[0], np.shape(el.nlteData['depart'])[1]+1, np.shape(el.nlteData['depart'])[2]), np.nan)
-        # for i in range(len(el.nlteData['pointer'])):
-        #     el.nlteData['departNew'][i] = np.vstack([el.nlteData['depthScale'][i], el.nlteData['depart'][i]])
-        # el.nlteData['depart'] = el.nlteData['departNew'].copy()
-        # del el.nlteData['departNew']
-        # del el.nlteData['depthScale']
-
-#
-        """
-        If element is Fe, than [Fe/H] == A(Fe) with an offset,
-        so one of the parameters needs to be excluded to avoid degeneracy
-        Here we omit [Fe/H] dimension but keep A(Fe)
-        """
-        if len(np.unique(el.nlteData['feh'])) == len(np.unique(el.nlteData['abund'])): # it is probably Fe
-            if el.isFe:
-                interpolCoords_el = [c for c in interpolCoords if c!='feh']
-                indiv_abund = np.unique(el.nlteData['abund'])
-            else:
-                print(f"abundance of {el.ID} is coupled to metallicity, \
-but element is not Fe (for Fe A(Fe) == [Fe/H] is acceptable)")
-                exit()
-        elif len(np.unique(el.nlteData['abund'])) == 1 : # it is either H or no iteration ovr abundance was included in computations of NLTE grids
-                interpolCoords_el = interpolCoords.copy()
-                indiv_abund = np.unique(el.nlteData['abund'])
-        else:
-            interpolCoords_el = interpolCoords.copy()
-            indiv_abund = np.unique(el.nlteData['abund'] - el.nlteData['feh'])
-
-        """
-        Here we use Delaunay triangulation to interpolate over
-        fund. parameters like Teff, log(g), [Fe/H], etc,
-        and direct linear interpolation for abundance,
-        since it is regularly spaced by construction.
-        This saves a lot of time.
-        """
-        el.interpolator = {
-                'abund' : [], 'interpFunction' : [], 'normCoord' : []
-        }
-
-        """ Split the NLTE grid into chuncks of the same abundance """
-        subGrids = {
-                'abund':np.zeros(len(indiv_abund)), \
-                'nlteData':np.empty(len(indiv_abund), dtype=dict)
-        }
-        for i in range(len(indiv_abund)):
-            subGrids['abund'][i] = indiv_abund[i]
-            if el.isFe or el.isH:
-                mask = np.where( np.abs(el.nlteData['abund'] - \
-                                subGrids['abund'][i]) < 0.001)[0]
-            else:
-                mask = np.where( np.abs(el.nlteData['abund'] - \
-                        el.nlteData['feh'] - subGrids['abund'][i]) < 0.001)[0]
-            subGrids['nlteData'][i] = {
-                        k: el.nlteData[k][mask] for k in el.nlteData
-            }
-
-        """
-        Run tests and eventually build an interpolating function
-        for each sub-grid of constant abundance
-        Delete intermediate data
-        """
-        for i in range(len(subGrids['abund'])):
-            ab = subGrids['abund'][i]
-            passed = preInterpolationTests(subGrids['nlteData'][i], \
-                                        interpolCoords_el, \
-                                        valueKey='depart', \
-                                        dataLabel=f"NLTE grid {el.ID}")
-            if passed:
-                interpFunction, normalisedCoord  = \
-                    NDinterpolateGrid(subGrids['nlteData'][i], \
-                        interpolCoords_el,\
-                        valueKey='depart', dataLabel=f"NLTE grid {el.ID}")
-
-                el.interpolator['abund'].append(ab)
-                el.interpolator['interpFunction'].append(interpFunction)
-                el.interpolator['normCoord'].append(normalisedCoord)
-            else:
-                print("Failed pre-interpolation tests, see above")
-                print(f"NLTE grid: {el.ID}, A({el.ID}) = {ab}")
-                exit()
-        del subGrids
-
-
-    def interpolateAllPoints_MA(self):
-        """
-        Python parallelisation libraries can not send more than X Gb of data between processes
-        To avoid that, interpolation at each requested point is done before the start of computations
-        """
-        if self.debug: print(f"Interpolating to each of {self.inputParams['count']} requested points...")
-
-        "Model atmosphere grid"
-        self.inputParams.update({'modelAtmInterpol' : np.full(self.inputParams['count'], None) })
-
-        countOutsideHull = 0
-        for i in range(self.inputParams['count']):
-            point = [ self.inputParams[k][i] / self.interpolator['modelAtm']['normCoord'][k] \
-                    for k in self.interpolator['modelAtm']['normCoord'] ]
-            if not in_hull(np.array(point).T, self.interpolator['modelAtm']['hull']):
-                countOutsideHull += 1
-            else:
-                values =  self.interpolator['modelAtm']['interpFunction'](point)[0]
-                self.inputParams['modelAtmInterpol'][i] = values
-        if countOutsideHull > 0 and self.debug:
-            print(f"{countOutsideHull}/{self.inputParams['count']}requested \
-points are outside of the model atmosphere grid.\
-No computations will be done for those")
-
-    def interpolateAllPoints_NLTE(self, el):
-        """
-        Interpolate to each requested abundance of element (el)
-        Write departure coefficients to a file
-        that will be used as input to TS later
-        """
-        el.departFiles = np.full(self.inputParams['count'], None)
-        for i in range(len(el.abund)):
-                departFile = el.departDir + \
-                        f"/depCoeff_{el.ID}_{el.abund[i]:.3f}_{i}.dat"
-#            if not os.path.isfile(departFile):
-                x, y = [], []
-                # TODO: introduce class for nlte grid and set exceptions if grid wasn't rescaled
-                tau = self.depthScaleNew
-                for j in range(len(el.interpolator['abund'])):
-                    point = [ self.inputParams[k][i] / el.interpolator['normCoord'][j][k] \
-                             for k in el.interpolator['normCoord'][j] if k !='abund']
-                    ab = el.interpolator['abund'][j]
-                    departAb = el.interpolator['interpFunction'][j](point)[0]
-                    if not np.isnan(departAb).all():
-                        x.append(ab)
-                        y.append(departAb)
-                x, y = np.array(x), np.array(y)
-                """
-                Now interpolate linearly along abundance axis
-                If only one point is present (e.g. A(H) is always 12),
-                take departure coefficient at that abundance
-                """
-                print(f"found {len(y)} data-sets at {len(x)} abundances...")
-                if len(x) >= 2:
-                    print('now linearly interpolating over abundance:', x)
-                    if not el.isFe or el.isH:
-                        depart= interp1d(x, y, fill_value = 'extrapolate',  axis=0)(el.abund[i] - self.inputParams['feh'][i] )
-                        depart = restoreDepartScaling(depart, el)
-                    else:
-                        depart = interp1d(x, y, fill_value = 'extrapolate', axis=0)(el.abund[i])
-                        depart = restoreDepartScaling(depart, el)
-                    abund = el.abund[i]
-                    #print('NaNs?', np.isnan(depart).any())
-                elif len(x) == 1 and el.isH:
-                    print(f'only one point at abundandance={x} found, will accept depart coeff.')
-                    depart = y[0]
-                    abund = el.abund[i]
-                    depart = restoreDepartScaling(depart, el)
-                    #print('NaNs?', np.isnan(depart).any())
-                else:
-                    print(f"Found no departure coefficients \
-at A({el.ID}) = {el.abund[i]}, [Fe/H] = {self.inputParams['feh'][i]} at i = {i}")
-                    depart = np.nan
-                """
-                If interpolation failed e.g. if the point is outside of the grid,
-                find the closest point in the grid and take a departure coefficient
-                for that point
-                """
-                if np.isnan(depart).all():
-                    #if self.debug:
-                    print(f"attempting to find the closest point the in the grid of departure coefficients")
-# TODO: move the four routines below into model_atm_interpolation
-                    point = {}
-                    for k in el.interpolator['normCoord'][0]:
-                        point[k] = self.inputParams[k][i]
-                    if 'abund' not in point
-                        point['abund'] = el.abund[i]
-                    pos, comment = find_distance_to_point(point, el.nlteData)
-                    depart = el.nlteData['depart'][pos]
-                    depart = restoreDepartScaling(depart, el)
-                    tau = el.nlteData['depthScale'][pos]
-
-                    for k in el.interpolator['normCoord'][0]:
-                        if ( np.abs(el.nlteData[k][pos] - point[k]) / point[k] ) > 0.5:
-                            self.inputParams['comments'][i] += f"departure coefficients \
-for {el.ID} were taken at point with the following parameters:\n"
-                            for k in el.interpolator['normCoord'][0]:
-                                self.inputParams['comments'][i] += f"{k} = {el.nlteData[k][pos]}\
- (off by {point[k] - el.nlteData[k][pos] }) \n"
-                    abund = el.abund[i]
-                write_departures_forTS(departFile, tau, depart, abund)
-                el.departFiles[i] = departFile
-                self.inputParams['comments'][i] += el.comment
-
-
-
-
-    def createTSinputFlags(self):
-        self.ts_input = { 'PURE-LTE':'.false.', 'MARCS-FILE':'.false.', 'NLTE':'.false.',\
-        'NLTEINFOFILE':'', 'LAMBDA_MIN':4000, 'LAMBDA_MAX':9000, 'LAMBDA_STEP':0.05,\
-         'MODELOPAC':'./OPAC', 'RESULTFILE':'' }
-
-
-        """ At what wavelenght range to compute a spectrum? """
-        self.lam_start, self.lam_end = min(self.lam_end, self.lam_start), \
-                                    max(self.lam_end, self.lam_start)
-        self.wave_step = np.mean([self.lam_start, self.lam_end]) / self.resolution
-        self.ts_input['LAMBDA_MIN'] = self.lam_start
-        self.ts_input['LAMBDA_MAX'] = self.lam_end
-        self.ts_input['LAMBDA_STEP'] = self.wave_step
-
-
-        """ Linelists """
-        if type(self.linelist) == np.array or type(self.linelist) == np.ndarray:
-            pass
-        elif type(self.linelist) == str:
-            self.linelist = np.array([self.linelist])
-        else:
-            print(f"Can not understand the 'linelist' flag: {self.linelist}")
-            exit(1)
-        llFormatted = []
-        for path in self.linelist:
-            if '*' in path:
-                llFormatted.extend( glob.glob(path) )
-            else:
-                llFormatted.append(path)
-        self.linelist = llFormatted
-        print(f"Linelist(s) will be read from: {' ; '.join(str(x) for x in self.linelist)}")
-
-        self.ts_input['NFILES'] = len(self.linelist)
-        self.ts_input['LINELIST'] = '\n'.join(self.linelist)
-
-
-        "Any element in NLTE?"
-        if self.nlte:
-            self.ts_input['NLTE'] = '.true.'

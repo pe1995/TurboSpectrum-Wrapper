@@ -14,7 +14,7 @@ def run_TS_parallel(set):
     Parameters
     ----------
     set : setup
-        Configuration of requested computaions
+        Configuration of requested computations
     """
 
     if set.ncpu > set.inputParams['count']:
@@ -25,6 +25,7 @@ Will use {set.ncpu} CPUs instead")
     ind = np.arange(set.inputParams['count'])
     args = [ [set, ind[i::set.ncpu]] for i in range(set.ncpu)]
 
+    unpackFunc = lambda arg : parallel_worker(arg[0], arg[1])
     with Pool(processes=set.ncpu) as pool:
         pool.map(parallel_worker, args )
 

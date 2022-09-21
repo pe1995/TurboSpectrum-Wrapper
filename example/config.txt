@@ -1,0 +1,31 @@
+# config file used to setup TurboSpectrum (TS) run
+debug = 1
+# TS root directory
+ts_root = '/home/semenova/Turbospectrum2020'
+# list of model atmospheres to use
+
+# path to model atmospheres (in MARCS .mod format only for now)
+atmos_path = '/home/semenova/MARCS/all/'
+
+# 'm1d' or 'marcs'
+atmos_format = 'marcs'
+
+atmos_list = 'MARCS_all.in'
+
+# path to the linelist(s)
+linelist = ['/home/semenova/plato-solar/line_data/nlte_ges_linelist.txt', '~/plato-solar/turbospectrum2020/DATA/Hlinedata', '/home/semenova/plato-solar/line_data/molecular_linelists_TSformat/*GESv5.bsyn']
+ncpu=2
+
+inputParams_file = 'input_param.txt'
+nlte_grids_path = './nlteGrids/'
+nlte_config = [ ]
+nlte_config = [ H : [ 'H/NLTEgrid_H_MARCS_May-10-2021.bin',  'H/auxData_H_MARCS_May-10-2021.txt, 'H/atom.h20'] ]
+nlte_config += [ Fe : [ 'Fe/NLTEgrid4TS_Fe_MARCS_May-07-2021.bin','Fe/auxData_Fe_MARCS_May-07-2021.dat', 'Fe/atom.fe607a'] ]
+nlte_config += [ Ba : [ 'Ba/NLTEgrid_Ba_MARCS_May-10-2021.bin', 'Ba/auxData_Ba_MARCS_May-10-2021.txt', 'Ba/atom.ba111' ] ]
+
+# starting wavelenght, AA
+lam_start = 5700
+# last wavelenght, AA
+lam_end = 7000
+# resolution per wavelenght (R capital)
+resolution = 1000000

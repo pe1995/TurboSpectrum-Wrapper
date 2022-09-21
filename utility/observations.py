@@ -9,43 +9,46 @@ from functools import reduce
 from astropy import constants as const
 from astropy.modeling import Fittable1DModel, Parameter
 from copy import deepcopy
+from scipy import signal
 
 def readSpectrumTSwrapper(filePath):
     with open(filePath, 'r') as f:
         data = f.readlines()
-    specData = [l for l in data if not l.startswith('#') and not '*' in l and np.isfinite(float(l.split()[-1])) ]
-    if len(specData) > 0:
-        wvl, flux = np.loadtxt(specData, unpack=True, usecols=(0,1), dtype=float)
-        spec = spectrum(wvl,  flux, res = np.inf)
-        spec.labels = []
-        header = []
-        for l in data:
-            if len(l.replace('#', '').replace('\n', '').strip()) == 0:
-                break
-            if l.startswith('#'):
-                header.append(l)
-        fundPar = header[3:7]
-        for l in fundPar:
-            k, v = l.replace('#','').split('=')
-            k = k.strip().lower()
-            v = float(v.replace('\n','').strip())
-            spec.__dict__[k] = v
-            spec.labels.append(k)
-        elements = header[7:]
-        for l in elements:
-           el, abund = l.replace('#','').split('=')
-           el = el.split('(')[-1].split(')')[0].strip()
-           if '(' in abund:
-               abund = abund.split('(')[0].strip()
-           if '[' in abund:
-               abund = abund.split('[')[0].strip()
-           abund = float(abund)
-           spec.__dict__[el] = abund
-           spec.labels.append(el)
-        return spec
-    else:
-        print(f"empty file {filePath}")
+    #specData = [l for l in data if not l.startswith('#') and not '*' in l and np.isfinite(float(l.split()[-1])) ]
+    #if len(specData) > 0:
+        #wvl, flux = np.loadtxt(specData, unpack=True, usecols=(0,1), dtype=float)
+    wvl, flux = np.loadtxt(data, unpack=True, usecols=(0,1), dtype=float)
+    spec = spectrum(wvl,  flux, res = np.inf)
+    if len(spec.flux) == 0:
         return None
+    spec.labels = []
+    header = []
+    for l in data:
+        if len(l.replace('#', '').replace('\n', '').strip()) == 0:
+            break
+        if l.startswith('#'):
+            header.append(l)
+    #fundPar = header[3:7]
+    fundPar = header[4:8]
+    for l in fundPar:
+        k, v = l.replace('#','').split('=')
+        k = k.strip().lower()
+        v = float(v.replace('\n','').strip())
+        spec.__dict__[k] = v
+        spec.labels.append(k)
+    #elements = header[7:]
+    elements = header[8:]
+    for l in elements:
+       el, abund = l.replace('#','').split('=')
+       el = el.split('(')[-1].split(')')[0].strip()
+       if '(' in abund:
+           abund = abund.split('(')[0].strip()
+       if '[' in abund:
+           abund = abund.split('[')[0].strip()
+       abund = float(abund)
+       spec.__dict__[el] = abund
+       spec.labels.append(el)
+    return spec
 
 def read_observations(path, format):
     """ Read observed spectrum """
@@ -59,7 +62,7 @@ def read_observations(path, format):
         # nm to AA
         w_obs = w_obs * 10
     if format.lower() == 'ascii':
-        w_obs, f_obs = np.loadtxt(path, unpack=True)
+        w_obs, f_obs = np.loadtxt(path, unpack=True, usecols=(0,1))
 
     # EXCLUDE REPEATING WAVELENGTH POINTS
     _, un_ind = np.unique(w_obs, return_index=True)
@@ -109,6 +112,28 @@ def select_within_linemask(line_masks, element, w_obs, w_model, debug=False):
 
         return lm['w_center'], ind_obs, ind_model, check
 
+def convolve_gauss(x, y, V, mode = 'broadening'):
+    """
+    mode can be 'resolution' or 'broadening' for Vrot, Vmac, etc
+    for cont norm. spectra only?
+    """
+    #print(f"Vbroad = {V}")
+    if 'res' in mode.lower():
+        delta = x / V
+    elif 'broad' in mode.lower():
+        delta =  x * V / const.c.to('km/s').value
+    else: 
+        print(f"Can not understand mode {mode} provided to convolve_gauss")
+        exit()
+    std = delta / (2.0 * np.sqrt(2. * np.log(2.))) / np.gradient(x)
+    gauss = signal.gaussian(len(x), std)
+    y1 = np.convolve(y, gauss, mode='same')
+    grad = np.gradient(y1)
+    mask = np.where(np.abs(grad) < np.std(grad)/3)
+    cont = np.mean(y1[mask])
+    y1 = y1/cont
+    #y1 = y1/max(y1)
+    return y1
 
 class spectrum(object):
     def __init__(self, w, f, res):
@@ -120,15 +145,22 @@ class spectrum(object):
         # determine step of the datapoints
         self.lam_step = np.median(self.lam[1:] - self.lam[:-1])
 
-
     def convolve_resolution(self, R_new, quite=True):
+        if len(np.unique(np.gradient(self.lam))) > 1:
+            print("Warning..")
         if not quite:
             print(F"Convolving spectrum from R={self.R} to R={R_new}...")
-
-        d_lam = (np.mean(self.lam)/R_new)
-        sigma = d_lam / (2.0 * np.sqrt(2. * np.log(2.)))
-        kernel = convolution.Gaussian1DKernel(sigma/self.lam_step)
-        self.flux =  convolution.convolve(self.flux, kernel)
+        fwhmMean = (np.mean(self.lam)/R_new) / (2.0 * np.sqrt(2. * np.log(2.))) / self.lam_step
+        x_size=1501*int(fwhmMean)
+        if x_size % 2 == 0:
+            x_size += 1
+        nbins = int(len(self.lam)/x_size)+1
+        if nbins > len(self.lam):
+            nbins = len(self.lam)
+        for e in range(nbins):
+            fwhm = (np.mean(self.lam[e*x_size:(e+1)*x_size])/R_new) / (2.0 * np.sqrt(2. * np.log(2.))) /self.lam_step
+            kernel = convolution.Gaussian1DKernel(fwhm)
+            self.flux[e*x_size:(e+1)*x_size] =  convolution.convolve(self.flux[e*x_size:(e+1)*x_size], kernel, fill_value=1)
         self.R = R_new
 
     def convolve_rotation(self, Vrot,  quite=True):
@@ -142,8 +174,7 @@ class spectrum(object):
         """
         self.Vrot = Vrot
         if self.Vrot < 0:
-            print(F"Rotational velocity <0: {self.Vrot}. Can only be positive (km/s). Stopped.")
-            exit(1)
+            print(F"Rotational velocity <0: {self.Vrot}. Can only be positive (km/s).")
         if self.Vrot == 0: # do nothing
             pass
         elif not np.isnan(self.Vrot):
@@ -155,23 +186,20 @@ class spectrum(object):
             else:
                 # FWHM: km/s --> A --> step
                 # assumes constant step along the whole wavelength range
-                fwhm = self.Vrot * np.mean(self.lam) / const.c.to('km/s').value / self.lam_step
+                fwhmMean = self.Vrot * np.mean(self.lam) / const.c.to('km/s').value / self.lam_step
 
                 # kernel should always have odd size  along all axis
-                w, f = self.lam, self.flux
-                odd = False
-                if len(w) % 2 == 0:
-                    w = np.hstack((w, w[-1]))
-                    f = np.hstack((f, f[-1]))
-                    odd = True
+                x_size=1501*int(fwhmMean)
+                if x_size % 2 ==0:
+                    x_size += 1
+                nbins = int(len(self.lam)/x_size)+1
+                if nbins > len(self.lam):
+                    nbins = len(self.lam)
+                for e in range(nbins):
+                    fwhm = self.Vrot * np.mean(self.lam[e*x_size:(e+1)*x_size]) / const.c.to('km/s').value / self.lam_step
+                    rot_kernel = convolution.Model1DKernel(rotation(fwhm), x_size=x_size )
+                    self.flux[e*x_size:(e+1)*x_size] = convolution.convolve(self.flux[e*x_size:(e+1)*x_size], rot_kernel, fill_value=1)
 
-                rot_kernel = convolution.Model1DKernel(rotation(fwhm), x_size=len(w) )
-                f = convolution.convolve(f, rot_kernel, fill_value=1)
-
-                if odd:
-                    self.flux = f[:-1]
-                else:
-                    self.flux = f
         else:
             print(F"Unexpected Vrot={self.Vrot} [km/s]. Stopped.")
             exit(1)
@@ -190,8 +218,7 @@ class spectrum(object):
         if self.Vmac == 0: # do nothing
             pass
         elif self.Vmac < 0:
-            print(F"Macroturbulence <0: {self.Vmac}. Can only be positive (km/s). Stopped.")
-            exit(1)
+            print(F"Macroturbulence <0: {self.Vmac}. Can only be positive (km/s).")
         elif not np.isnan(self.Vmac):
             spec_deltaV = self.lam_step/np.mean(self.lam) * const.c.to('km/s').value
             if (spec_deltaV) > self.Vmac:
@@ -201,24 +228,19 @@ class spectrum(object):
             else:
                 # FWHM: km/s --> A --> step
                 # assumes constant step along the whole wavelength range
-                fwhm = self.Vmac * np.mean(self.lam) / const.c.to('km/s').value / self.lam_step
+                fwhmMean = self.Vmac * np.mean(self.lam) / const.c.to('km/s').value / self.lam_step
 
                 # kernel should always have odd size along all axis
-                w, f = self.lam, self.flux
-                odd = False
-                if len(w) % 2 == 0:
-                    w = np.hstack((w, w[-1]))
-                    f = np.hstack((f, f[-1]))
-                    odd = True
-                # # TODO: size of the kernel needs to be estimated from the FWHM
-                macro_kernel = convolution.Model1DKernel( rad_tang(fwhm), x_size=len(w) )
-
-                f = convolution.convolve(f, macro_kernel, fill_value=1)
-
-                if odd:
-                    self.flux = f[:-1]
-                else:
-                    self.flux = f
+                x_size=1501*int(fwhmMean)
+                if x_size % 2 ==0:
+                    x_size += 1
+                nbins = int(len(self.lam)/x_size)+1
+                if nbins > len(self.lam):
+                    nbins = len(self.lam)
+                for e in range(nbins):
+                    fwhm = self.Vmac * np.mean(self.lam[e*x_size:(e+1)*x_size]) / const.c.to('km/s').value / self.lam_step
+                    macro_kernel = convolution.Model1DKernel( rad_tang(fwhm), x_size=x_size )
+                    self.flux[e*x_size:(e+1)*x_size] = convolution.convolve(self.flux[e*x_size:(e+1)*x_size], macro_kernel, fill_value=1)
         else:
             print(F"Unexpected Vmac={self.Vmac} [km/s]. Stopped.")
             exit(1)
@@ -226,6 +248,12 @@ class spectrum(object):
 
     def copy(self):
         return deepcopy(self)
+
+    def cut(self, lim):
+        start, end = lim
+        mask = np.logical_and(self.lam > start, self.lam < end)
+        self.lam = self.lam[mask]
+        self.flux = self.flux[mask]
 
 
 
