@@ -24,12 +24,12 @@ def callNN(wavelength, obsSpec, NNdict, p0, freeLabels, setLabels, mask, quite=T
      To ensure the best convergence this function needs to be called on normalised labels (in p0)
      maybe it would work withput normalisation? it would make the code so much nicer
     """
-  #  setLabels[i] = (setLabels[i] - norm['min'][i] ) / ( norm['max'][i] - norm['min'][i] ) - 0.5    
+  #  setLabels[i] = (setLabels[i] - norm['min'][i] ) / ( norm['max'][i] - norm['min'][i] ) - 0.5
 
     labels = setLabels.copy()
     labels[freeLabels] = p0
     print(labels[freeLabels])
-    Vbroad = labels[-3] 
+    Vbroad = labels[-3]
     rv = labels[-2]
     offset = labels[-1]
     flux, wvl = [], []
@@ -52,7 +52,7 @@ def callNN(wavelength, obsSpec, NNdict, p0, freeLabels, setLabels, mask, quite=T
         i = np.max( np.array(ind).astype(int)) + 1
     else:
         i = 0
-    np.savetxt(f'./bestFit_{i:.0f}.txt', np.vstack([wavelength, obsSpec.flux[mask], flux]).T ) 
+    np.savetxt(f'./bestFit_{i:.0f}.txt', np.vstack([wavelength, obsSpec.flux[mask], flux]).T )
     print(f"chi^2 = {chi2:.2f}")
     return flux
 
@@ -88,7 +88,7 @@ def fitToNeuralNetwork(obsSpec, NNdict, prior = None, quite = True):
         if freeLabels[i]:
             initLabels.append( np.mean( (norm['min'][i], norm['max'][i] ) ) )
     #"""
-    #Resampled (and cut if needed)  observed spectrum to the wavelength points 
+    #Resampled (and cut if needed)  observed spectrum to the wavelength points
     #provided in the ANN
     #"""
     #w_new = []
@@ -103,10 +103,10 @@ def fitToNeuralNetwork(obsSpec, NNdict, prior = None, quite = True):
     #chi2mask = np.where(1.-specObs.flux > 3*1/np.mean(specObs.SNR)  )
     chi2mask = len(specObs.flux) * [True]
     if len(specObs.flux[chi2mask]) > 0.7 * len(specObs.flux) :
-    
-    
+
+
         """
-        Lambda function for fitting 
+        Lambda function for fitting
         """
         fitFunc = lambda wavelength, *labels : callNN(
                                                     wavelength, obsSpec,
@@ -125,7 +125,7 @@ def fitToNeuralNetwork(obsSpec, NNdict, prior = None, quite = True):
             return np.full(len(setLabels), np.nan), np.nan
         " restore normalised labels "
         setLabels[freeLabels] = popt
-    
+
         wavelength = obsSpec.lam
         #chi2 = np.sqrt(np.sum(obsSpec.flux - flux)**2)
         chi2 = np.inf
@@ -136,7 +136,7 @@ def fitToNeuralNetwork(obsSpec, NNdict, prior = None, quite = True):
 
 def internalAccuracyFitting(nnPath, specList, solveFor=None, lam_limits = [-np.inf, np.inf]):
     print(f"Solving for {solveFor}...")
-    
+
     if isinstance(nnPath, type(str)):
         nnPath = glob.glob(nnPath)
     if len(nnPath) > 0:
@@ -145,7 +145,7 @@ def internalAccuracyFitting(nnPath, specList, solveFor=None, lam_limits = [-np.i
     NN = {}
     wvl = []
     for nnFile in nnPath:
-        NNid = nnFile.split('/')[-1].replace('.npz', '').strip() 
+        NNid = nnFile.split('/')[-1].replace('.npz', '').strip()
         " Make a snapshot in time in case the training is on-going and file might be over-written "
         shutil.copy(nnFile, f"{nnFile}_snap")
         nnFile = f"{nnFile}_snap"
@@ -211,8 +211,6 @@ EMCEE stuff
 """
 def likelihood(labels, x, y, yerr, NN):
     ANNlabels = labels[:-1]
-    #ANNlabels = [5421.00,  2.72, 0.70, -1.51, 5.95, 3.88, 3.46]
-    #ANNlabels.append(labels[0])
     log_f = labels[-1]
     modelFlux = restore(x, NN, ANNlabels )
     #if Vbroad > 0.0:
@@ -224,8 +222,6 @@ def likelihood(labels, x, y, yerr, NN):
 
 def prior(labels, NN):
     ANNlabels = labels[:-1]
-    #ANNlabels = [5421.00,  2.72, 0.70, -1.51, 5.95, 3.88, 3.46]
-    #ANNlabels.append(labels[0])
     log_f = labels[-1]
     check = np.full(len(ANNlabels), False)
     for i in range(len(ANNlabels)):
@@ -243,30 +239,27 @@ def probability(labels, x, y, yerr, NNpath):
         return -np.inf
     else:
         return likelihood(labels, x, y, yerr, NN) + lp
-    
+
 def MCMCwithANN(NNpath, specPath):
-    #import mkl
-    #mkl.set_num_threads(100)
+    import emcee
+
+    profiler = cProfile.Profile()
+    profiler.enable()
 
     NN = readNN(NNpath)
-    spec = readSpectrumTSwrapper(specPath)  
+    spec = readSpectrumTSwrapper(specPath)
     #spec.cut([6170, 6190])
     spec.cut([min(NN['wvl']), max(NN['wvl'])])
     computedLabels = [ spec.__dict__[k] for k  in NN['labelsKeys'] ]
-    for l in NN['labelsKeys']:
-        print(f"{l} = {spec.__dict__[l]:.2f}")
     w, f = spec.lam, spec.flux
     ferr = np.full(len(f), 0.01)
-    import emcee
 
     startingPoint = ( NN['x_max'] + NN['x_min'] ) / 2.
-    #startingPoint = computedLabels
-    print(startingPoint)
     startingPoint = np.hstack([startingPoint, [-5]])
-    # Ni
-    #startingPoint[7] = startingPoint[7] - 1
-    #startingPoint.append(-5)
-    #startingPoint = [3, -5]
+
+    for i, l in enumerate(NN['labelsKeys']):
+        print(f"{l} = {spec.__dict__[l]:.2f}, start at {startingPoint[i]:0.2f}")
+
     nwalkers = 32
     pos = np.array(startingPoint) + np.random.randn(nwalkers, len(startingPoint)) * 1e-2 * startingPoint.T
 
@@ -274,7 +267,6 @@ def MCMCwithANN(NNpath, specPath):
     from multiprocessing import Pool
 
     with Pool(processes=nwalkers) as pool:
-    
         sampler = emcee.EnsembleSampler(
             nwalkers, ndim, probability, pool = pool, args=(w, f, ferr, NNpath)
         )
@@ -287,16 +279,21 @@ def MCMCwithANN(NNpath, specPath):
         print(f"{NN['labelsKeys'][i]} = {mcmc[1]:.3f} + {q[0]:.3f} - {q[1]:.3f}")
     i = ndim-1
     mcmc = np.percentile(flat_samples[:, i], [16, 50, 84])
-    print(f"log_f = {mcmc[1]:.3f}") 
+    print(f"log_f = {mcmc[1]:.3f}")
     
+    profiler.disable()
+    with open('./log_profiler.txt', 'w') as stream:
+       stats = pstats.Stats(profiler, stream = stream).sort_stats('cumulative')
+       stats.print_stats()
+
 
 if __name__ == '__main__':
     if len(argv) < 3:
         print("Usage: $ python ./fit_observations.py \
 <path to model spectra or payne NN> <path to observed spectra> ")
         exit()
-    profiler = cProfile.Profile()
-    profiler.enable()
+    # profiler = cProfile.Profile()
+    # profiler.enable()
 
     "Fit using Payne neural network"
     nnPath = argv[1]
@@ -306,20 +303,20 @@ if __name__ == '__main__':
     specList = glob.glob(obsPath)
     #specList = glob.glob('./uves_test/ksi_Hya/uvu_11325994-3151279_520.0_25_reNormCont.asc')
     print(f"found {len(specList)} observed spectra")
-    
+
     Jofre = {
-    'HD122563' : {'teff':4587, 'logg':1.61, 'vturb':1.92, 'feh':-2.64, 
-                  'Mg':5.296, 'Mn':2.196, 'Co':2.248, 'Ni':3.493, 'vsini':5.0, 'key':'14023168+0941090'}, 
-    'HD220009' : {'teff':4275, 'logg':1.47, 'vturb':1.49 , 'feh': -0.74, 
-                  'Mg':7.303, 'Mn': 4.193, 'Co':4.216, 'Ni':5.443, 'vsini':1.0, 'key':'23202065+0522519'},  
-    'HD107328' : {'teff':4496, 'logg':2.09, 'vturb':1.65, 'feh':-0.33, 
-                  'Mg':7.571, 'Mn':4.620, 'Co':4.710, 'Ni':5.865, 'vsini':1.9,  'key':'12202074+0318445',}, 
-    'ksi_Hya' : {'teff':5044, 'logg':2.87, 'vturb':1.40 , 'feh': 0.16, 
-                  'Mg':7.684, 'Mn': 5.195, 'Co':4.881, 'Ni':6.215, 'vsini':2.4, 'key':'11325994-3151279'}, 
-    'mu_Leo' : {'teff':4474, 'logg':2.51, 'vturb':1.28 , 'feh': 0.25, 
-                  'Mg':8.116, 'Mn': 5.387, 'Co':5.342, 'Ni':6.504, 'vsini':5.1,  'key':'09524561+2600243'},       
+    'HD122563' : {'teff':4587, 'logg':1.61, 'vturb':1.92, 'feh':-2.64,
+                  'Mg':5.296, 'Mn':2.196, 'Co':2.248, 'Ni':3.493, 'vsini':5.0, 'key':'14023168+0941090'},
+    'HD220009' : {'teff':4275, 'logg':1.47, 'vturb':1.49 , 'feh': -0.74,
+                  'Mg':7.303, 'Mn': 4.193, 'Co':4.216, 'Ni':5.443, 'vsini':1.0, 'key':'23202065+0522519'},
+    'HD107328' : {'teff':4496, 'logg':2.09, 'vturb':1.65, 'feh':-0.33,
+                  'Mg':7.571, 'Mn':4.620, 'Co':4.710, 'Ni':5.865, 'vsini':1.9,  'key':'12202074+0318445',},
+    'ksi_Hya' : {'teff':5044, 'logg':2.87, 'vturb':1.40 , 'feh': 0.16,
+                  'Mg':7.684, 'Mn': 5.195, 'Co':4.881, 'Ni':6.215, 'vsini':2.4, 'key':'11325994-3151279'},
+    'mu_Leo' : {'teff':4474, 'logg':2.51, 'vturb':1.28 , 'feh': 0.25,
+                  'Mg':8.116, 'Mn': 5.387, 'Co':5.342, 'Ni':6.504, 'vsini':5.1,  'key':'09524561+2600243'},
     }
-    
+
     lim = None
     lim = [6176, 6178]
 
@@ -329,7 +326,7 @@ if __name__ == '__main__':
            ANNs[nnPath.split('/')[-1]] = NN
     with open('./fittingResults.dat', 'w') as fOut:
             fOut.write('#  ' + '   '.join(f"{k}" for k in NN['labelsKeys']) + ' Vbroad RV  offset chi  SNR\n' )
-            
+
             #profiler = cProfile.Profile()
             #profiler.enable()
             for sp in specList:
