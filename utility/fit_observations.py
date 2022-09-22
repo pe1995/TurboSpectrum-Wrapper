@@ -1,5 +1,7 @@
 import os, inspect, sys
-#os.environ["OMP_NUM_THREADS"] = "100"
+#os.environ["OMP_NUM_THREADS"] = "1"
+#os.environ['MKL_NUM_THREADS'] = "1"
+#os.environ['OPENBLAS_NUM_THREADS'] = "1"
 import numpy as np
 from sys import argv, exit
 import glob
@@ -210,36 +212,57 @@ def internalAccuracyFitting(nnPath, specList, solveFor=None, lam_limits = [-np.i
 """
 EMCEE stuff
 """
-def likelihood(labels, x, y, yerr, NN):
-    ANNlabels = labels[:-1]
+def likelihood(labels, x, y, yerr, NN, specRes):
+    ANNlabels = labels[:-3]
+    vbroad = labels[-3]
+    rv = labels[-2]
     log_f = labels[-1]
+
+    # for model spectra:
+    rv = 0
+    vbroad = 0
+
+    x += rv
+
     modelFlux = restore(x, NN, ANNlabels )
-    #if Vbroad > 0.0:
-    #    flux = convolve_gauss(x, modelFlux, Vbroad, mode='broad')
-    #if NN['res'] < np.inf:
-    #    flux = convolve_gauss(x, modelFlux, NN['res'], mode='res')
+    time0 = time.time()
+    if vbroad > 0.0:
+        modelFlux = convolve_gauss(x, modelFlux, vbroad, mode='broad')
+    #print(f"convolved in {time.time() - time0:.0f} second")
+    if specRes < NN['res'] :
+        modelFlux = convolve_gauss(x, modelFlux, NN['res'], mode='res')
+
     sigma2 = yerr**2 + modelFlux**2 * np.exp(2 * log_f)
     return -0.5 * np.sum((y - modelFlux) ** 2 / sigma2 + np.log(sigma2))
 
 def prior(labels, NN):
-    ANNlabels = labels[:-1]
+    ANNlabels = labels[:-3]
+    vbroad = labels[-3]
+    rv = labels[-2]
     log_f = labels[-1]
     check = np.full(len(ANNlabels), False)
     for i in range(len(ANNlabels)):
         if NN['x_min'][i]  < ANNlabels[i] < NN['x_max'][i]:
             check[i] = True
-    if check.all() and -10.0 < log_f < 1.0:
+    if -2 < rv < 2: # in AA
+        check = np.hstack( [check, [True]] )
+    if 0.1 < vbroad < 20:
+        check = np.hstack( [check, [True]] )
+    if -10.0 < log_f < 1.0:
+        check = np.hstack( [check, [True]] )
+
+    if check.all():
         return 0.0
     else:
         return -np.inf
 
-def probability(labels, x, y, yerr, NNpath):
+def probability(labels, x, y, yerr, NNpath, specRes):
     NN = readNN(NNpath, quite=True)
     lp = prior(labels, NN)
     if not np.isfinite(lp):
         return -np.inf
     else:
-        return likelihood(labels, x, y, yerr, NN) + lp
+        return likelihood(labels, x, y, yerr, NN, specRes) + lp
 
 def getStartingEstimation(NN, nSamples = 100):
     """
@@ -258,67 +281,55 @@ def getStartingEstimation(NN, nSamples = 100):
     return params, fluxes
 
 
-def MCMCwithANN(NNpath, specPath):
+def MCMCwithANN(NNpath, spec, nwalkers=32, steps=100, startingGrid = None):
     import emcee
     from multiprocessing import Pool
 
-
     NN = readNN(NNpath)
-    sampledPoints, sampledFlux = getStartingEstimation(NN, nSamples=100)
-    profiler = cProfile.Profile()
-    profiler.enable()
 
-    for specFile in glob.glob(specPath):
-        spec = readSpectrumTSwrapper(specFile)
-        #spec.cut([6170, 6190])
-        spec.cut([min(NN['wvl']), max(NN['wvl'])])
-        computedLabels = [ spec.__dict__[k] for k  in NN['labelsKeys'] ]
-        w, f = spec.lam, spec.flux
-        ferr = np.full(len(f), 0.01)
+#    profiler = cProfile.Profile()
+#    profiler.enable()
 
+    w, f = spec.lam, spec.flux
+    ferr = 1/spec.snr
+
+    if not isinstance(startingGrid, type(None)):
+        sampledPoints, sampledFlux = startingGrid
         chi2 = np.full(len(sampledPoints), np.nan)
         for i in range(len(sampledPoints)):
             fMod = np.interp(w, NN['wvl'], sampledFlux[i])
             chi2[i] = np.sqrt( np.sum( (f - fMod)**2 ) )
         pos = np.where(chi2 == min(chi2))[0][0]
-        print(f"best starting point: {sampledPoints[pos]} with chi2 = {min(chi2):.1f}")
-
-
-        #startingPoint = ( NN['x_max'] + NN['x_min'] ) / 2.
         startingPoint = sampledPoints[pos]
-        startingPoint = np.hstack([startingPoint, [-5]])
-        
+    else:  startingPoint = ( NN['x_max'] + NN['x_min'] ) / 2.
 
-        for i, l in enumerate(NN['labelsKeys']):
+
+
+    labels = [k for k in NN['labelsKeys']]
+    labels.extend(['vbroad', 'rv', 'log_f'])
+
+    startingPoint = np.hstack([startingPoint, [0.1,0,-5] ])
+
+    for i, l in enumerate(labels):
+        if l in spec.__dict__:
             print(f"{l} = {spec.__dict__[l]:.2f}, start at {startingPoint[i]:0.2f}")
 
-        nwalkers = 32
-        pos = np.array(startingPoint) + np.random.randn(nwalkers, len(startingPoint)) * 1e-2 * startingPoint.T
+    pos = np.array(startingPoint) + np.random.randn(nwalkers, len(startingPoint)) * 1e-2 * startingPoint.T
 
-        ndim = pos.shape[1]
-#        [('DEMove', <class 'emcee.moves.de.DEMove'>), ('DESnookerMove', <class 'emcee.moves.de_snooker.DESnookerMove'>), ('GaussianMove', <class 'emcee.moves.gaussian.GaussianMove'>), ('KDEMove', <class 'emcee.moves.kde.KDEMove'>), ('MHMove', <class 'emcee.moves.mh.MHMove'>), ('Move', <class 'emcee.moves.move.Move'>), ('RedBlueMove', <class 'emcee.moves.red_blue.RedBlueMove'>), ('StretchMove', <class 'emcee.moves.stretch.StretchMove'>), ('WalkMove', <class 'emcee.moves.walk.WalkMove'>)]
+    ndim = pos.shape[1]
+    with Pool(processes=nwalkers) as pool:
+        sampler = emcee.EnsembleSampler(
+            nwalkers, ndim, probability, args=(w, f, ferr, NNpath, spec.R),
+            moves = emcee.moves.walk.WalkMove(),
+            pool = pool
+        )
+        sampler.run_mcmc(pos, steps, progress='notebook', skip_initial_state_check=True)
 
-        with Pool(processes=nwalkers) as pool:
-            sampler = emcee.EnsembleSampler(
-                nwalkers, ndim, probability, args=(w, f, ferr, NNpath),
-                #moves = emcee.moves.walk.WalkMove(),
-                moves = emcee.moves.de_snooker.DESnookerMove(),
-                pool = pool
-            )
-            sampler.run_mcmc(pos, 1000, progress=True)
-
-        flat_samples = sampler.get_chain(discard=10, thin=5, flat=True)
-        for i in range(ndim-1):
-            mcmc = np.percentile(flat_samples[:, i], [16, 50, 84])
-            q = np.diff(mcmc)
-            print(f"{NN['labelsKeys'][i]} = {mcmc[1]:.3f} + {q[0]:.3f} - {q[1]:.3f}")
-        i = ndim-1
-        mcmc = np.percentile(flat_samples[:, i], [16, 50, 84])
-        print(f"log_f = {mcmc[1]:.3f}")
-    profiler.disable()
-    with open(f"./log_profiler.txt", 'w') as stream:
-       stats = pstats.Stats(profiler, stream = stream).sort_stats('cumulative')
-       stats.print_stats()
+#    profiler.disable()
+#    with open(f"./log_profiler.txt", 'w') as stream:
+#       stats = pstats.Stats(profiler, stream = stream).sort_stats('cumulative')
+#       stats.print_stats()
+    return sampler
 
 
 
