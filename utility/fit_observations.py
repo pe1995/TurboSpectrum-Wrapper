@@ -1,6 +1,7 @@
+import os, inspect, sys
+#os.environ["OMP_NUM_THREADS"] = "100"
 import numpy as np
 from sys import argv, exit
-import os
 import glob
 import pickle
 from scipy import interpolate
@@ -246,75 +247,79 @@ def getStartingEstimation(NN, nSamples = 100):
     """
     params = []
     print(f"computing {nSamples:.0f} randomly uniformly distributed points in the ANN parameter space...")
-    for i in range(len(NNet['labelsKeys'])):
-        params.append( np.random.uniform(
-                                        min(NN['labelsKeys'][i]),
-                                        max(NN['labelsKeys'][i]),
-                                        nSamples)
-                                        )
-    params = np.array(params)
+    for i in range(len(NN['labelsKeys'])):
+        dist = np.random.uniform(  min(NN['labelsInput'][i]),  max(NN['labelsInput'][i]), size=nSamples )
+        params.append(dist)
+    params = np.array(params).T
+
     fluxes = np.ones( (len(params), len(NN['wvl'])) )
     for i in range(len(params)):
-        fluxMod = restore(NN['wvl'], NN, params[i])
-        fluxes[i] = fluxMod
+        fluxes[i] = restore(NN['wvl'], NN, params[i])
     return params, fluxes
 
 
 def MCMCwithANN(NNpath, specPath):
     import emcee
+    from multiprocessing import Pool
 
+
+    NN = readNN(NNpath)
+    sampledPoints, sampledFlux = getStartingEstimation(NN, nSamples=100)
     profiler = cProfile.Profile()
     profiler.enable()
 
-    NN = readNN(NNpath)
-    spec = readSpectrumTSwrapper(specPath)
-    #spec.cut([6170, 6190])
-    spec.cut([min(NN['wvl']), max(NN['wvl'])])
-    computedLabels = [ spec.__dict__[k] for k  in NN['labelsKeys'] ]
-    w, f = spec.lam, spec.flux
-    ferr = np.full(len(f), 0.01)
+    for specFile in glob.glob(specPath):
+        spec = readSpectrumTSwrapper(specFile)
+        #spec.cut([6170, 6190])
+        spec.cut([min(NN['wvl']), max(NN['wvl'])])
+        computedLabels = [ spec.__dict__[k] for k  in NN['labelsKeys'] ]
+        w, f = spec.lam, spec.flux
+        ferr = np.full(len(f), 0.01)
 
-    sampledPoints, sampledFlux = getStartingEstimation(NN, nSamples=50)
-    chi2 = np.full(len(sampledPoints), np.nan)
-    for i in len(sampledPoints):
-        fMod = np.interp(w), NN['wvl'], sampledFlux[i])
-        chi2 = np.sqrt( np.sum( (f - fMod)**2 ) )
-    pos = np.where(chi2 == max(chi2))[0][0]
-    print(f"best starting point: ")
-    print(sampledPoints[pos])
+        chi2 = np.full(len(sampledPoints), np.nan)
+        for i in range(len(sampledPoints)):
+            fMod = np.interp(w, NN['wvl'], sampledFlux[i])
+            chi2[i] = np.sqrt( np.sum( (f - fMod)**2 ) )
+        pos = np.where(chi2 == min(chi2))[0][0]
+        print(f"best starting point: {sampledPoints[pos]} with chi2 = {min(chi2):.1f}")
 
 
-    startingPoint = ( NN['x_max'] + NN['x_min'] ) / 2.
-    startingPoint = np.hstack([startingPoint, [-5]])
+        #startingPoint = ( NN['x_max'] + NN['x_min'] ) / 2.
+        startingPoint = sampledPoints[pos]
+        startingPoint = np.hstack([startingPoint, [-5]])
+        
 
-    for i, l in enumerate(NN['labelsKeys']):
-        print(f"{l} = {spec.__dict__[l]:.2f}, start at {startingPoint[i]:0.2f}")
+        for i, l in enumerate(NN['labelsKeys']):
+            print(f"{l} = {spec.__dict__[l]:.2f}, start at {startingPoint[i]:0.2f}")
 
-    nwalkers = 32
-    pos = np.array(startingPoint) + np.random.randn(nwalkers, len(startingPoint)) * 1e-2 * startingPoint.T
+        nwalkers = 32
+        pos = np.array(startingPoint) + np.random.randn(nwalkers, len(startingPoint)) * 1e-2 * startingPoint.T
 
-    ndim = pos.shape[1]
-    from multiprocessing import Pool
+        ndim = pos.shape[1]
+#        [('DEMove', <class 'emcee.moves.de.DEMove'>), ('DESnookerMove', <class 'emcee.moves.de_snooker.DESnookerMove'>), ('GaussianMove', <class 'emcee.moves.gaussian.GaussianMove'>), ('KDEMove', <class 'emcee.moves.kde.KDEMove'>), ('MHMove', <class 'emcee.moves.mh.MHMove'>), ('Move', <class 'emcee.moves.move.Move'>), ('RedBlueMove', <class 'emcee.moves.red_blue.RedBlueMove'>), ('StretchMove', <class 'emcee.moves.stretch.StretchMove'>), ('WalkMove', <class 'emcee.moves.walk.WalkMove'>)]
 
-    with Pool(processes=nwalkers) as pool:
-        sampler = emcee.EnsembleSampler(
-            nwalkers, ndim, probability, pool = pool, args=(w, f, ferr, NNpath)
-        )
-        sampler.run_mcmc(pos, 100, progress=True)
+        with Pool(processes=nwalkers) as pool:
+            sampler = emcee.EnsembleSampler(
+                nwalkers, ndim, probability, args=(w, f, ferr, NNpath),
+                #moves = emcee.moves.walk.WalkMove(),
+                moves = emcee.moves.de_snooker.DESnookerMove(),
+                pool = pool
+            )
+            sampler.run_mcmc(pos, 1000, progress=True)
 
-    flat_samples = sampler.get_chain(discard=10, thin=1, flat=True)
-    for i in range(ndim-1):
+        flat_samples = sampler.get_chain(discard=10, thin=5, flat=True)
+        for i in range(ndim-1):
+            mcmc = np.percentile(flat_samples[:, i], [16, 50, 84])
+            q = np.diff(mcmc)
+            print(f"{NN['labelsKeys'][i]} = {mcmc[1]:.3f} + {q[0]:.3f} - {q[1]:.3f}")
+        i = ndim-1
         mcmc = np.percentile(flat_samples[:, i], [16, 50, 84])
-        q = np.diff(mcmc)
-        print(f"{NN['labelsKeys'][i]} = {mcmc[1]:.3f} + {q[0]:.3f} - {q[1]:.3f}")
-    i = ndim-1
-    mcmc = np.percentile(flat_samples[:, i], [16, 50, 84])
-    print(f"log_f = {mcmc[1]:.3f}")
-
+        print(f"log_f = {mcmc[1]:.3f}")
     profiler.disable()
-    with open('./log_profiler.txt', 'w') as stream:
+    with open(f"./log_profiler.txt", 'w') as stream:
        stats = pstats.Stats(profiler, stream = stream).sort_stats('cumulative')
        stats.print_stats()
+
 
 
 if __name__ == '__main__':
