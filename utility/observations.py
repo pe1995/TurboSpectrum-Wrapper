@@ -128,26 +128,31 @@ def convolve_gauss(x, y, V, mode = 'broadening'):
     std = delta / (2.0 * np.sqrt(2. * np.log(2.))) / np.gradient(x)
     gauss = signal.gaussian(len(x), std)
     y1 = np.convolve(y, gauss, mode='same')
-    grad = np.gradient(y1)
-    mask = np.where(np.abs(grad) < np.std(grad)/3)
-    cont = np.mean(y1[mask])
-    y1 = y1/cont
-    #y1 = y1/max(y1)
-    return y1
+    #grad = np.gradient(y1)
+    #mask = np.where(np.abs(grad) < np.std(grad)/3)
+    #cont = np.mean(y1[mask])
+    #y1 = y1/cont
+    y1 = y1/max(y1)
+    y1[:10] = 1.0
+    y1[-10:] = 1.0
+    #grad = np.abs(np.gradient(y1))
+    #y1[grad > np.std(grad)] = 1.0
+    return np.mean(std), y1
 
 class spectrum(object):
-    def __init__(self, w, f, res):
+    def __init__(self, w, f, res=np.inf, snr=np.inf):
         self.lam = np.array(w)
         # by default normalised flux
         self.flux = np.array(f)
 
         self.R = res
+        self.SNR = snr
         # determine step of the datapoints
         self.lam_step = np.median(self.lam[1:] - self.lam[:-1])
 
     def convolve_resolution(self, R_new, quite=True):
-        if len(np.unique(np.gradient(self.lam))) > 1:
-            print("Warning..")
+        #if len(np.unique(np.gradient(self.lam))) > 1:
+        #    print("Warning..")
         if not quite:
             print(F"Convolving spectrum from R={self.R} to R={R_new}...")
         fwhmMean = (np.mean(self.lam)/R_new) / (2.0 * np.sqrt(2. * np.log(2.))) / self.lam_step
