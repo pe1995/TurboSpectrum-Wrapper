@@ -217,6 +217,18 @@ class model_atmosphere(object):
                     self.alpha = np.nan
         elif format.lower() == 'stagger':
 #            print(F"Guessing [Fe/H] and [alpha/Fe] from the file name {self.id}..")
+            with open(file, "r") as f:
+                h = f.readline().strip().split(" ")
+                self.id = h[2]
+                self.ID = h[2]
+                h = f.readline().strip().split(" ")
+                self.teff  = float(h[0])
+                self.logg  = float(h[1])
+                self.feh   = float(h[2])
+                self.alpha = 0.0
+            self.spherical = False
+
+            """
             read_atmos_m1d(self, file)
             teff = float(self.id.split('g')[0].replace('t',''))
             if teff != 5777:
@@ -233,6 +245,7 @@ class model_atmosphere(object):
             self.alpha = self.feh
             self.teff = teff
             #print(F"Guessed [Fe/H]={self.feh}, [alpha/Fe]={self.alpha}")
+            """
         else:
             raise Warning("Unrecognized format of model atmosphere: %s" %(format) )
 

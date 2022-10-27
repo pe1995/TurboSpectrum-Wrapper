@@ -6,6 +6,15 @@
 #SBATCH -D ./
 
 # Job Name:
-#SBATCH -J jobID
+#SBATCH -J TS
 
-python3.7  -u ./generate_random_grid.py  ./config.txt jobID_Label
+# Runtime and memory
+#SBATCH --time=3:00:00
+#SBATCH --mem=92g
+
+# For parallel jobs
+#SBATCH --cpus-per-task=40
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+
+python ./compute_opac.py  ./config.txt 'TSO'

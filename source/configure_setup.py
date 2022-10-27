@@ -103,7 +103,15 @@ class setup(object):
             print(f"Unknown mode in setup(): supported options are {supportModes}")
             exit()
 
-        self.read_config_file(file)
+        if isinstance(file, str):
+            self.read_config_file(file)
+        else:
+            for key in file:
+                if isinstance(file[key], list):
+                    self.__dict__[key] = np.array(file[key])
+                else:
+                    self.__dict__[key] = file[key]
+            self.inputParams = {"elements":{}}
 
         """ Any element to be treated in NLTE eventually? """
         for el in self.inputParams['elements'].values():
@@ -311,6 +319,8 @@ in the config file as 'atmos_format' ")
         if 'inputParams_file' in self.__dict__:
             self.inputParams, self.freeInputParams =\
              read_random_input_parameters(self.inputParams_file)
+        else:
+            self.inputParams = {"elements":{}}
 
         if 'nlte_config' in self.__dict__:
             for l in self.nlte_config:

@@ -129,3 +129,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Example output logs etc
+example/_TSO*
+example/job.err*
+example/slurm-*
+example/garbage
+example/*.dat

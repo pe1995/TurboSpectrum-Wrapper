@@ -9,7 +9,7 @@ from atmos_package import model_atmosphere
 
 
 def runTSforOpac(args):
-    setup, indices = args
+    setup, indices, skip_opacities, elementalAbundances = args
     for i, atmFile in enumerate(setup.atmos_list[indices]):
         " Read model atmosphere and write in TS appropriate format if not already"
         print(atmFile)
@@ -17,6 +17,9 @@ def runTSforOpac(args):
         atmos.read(atmFile, setup.atmos_format)
         if setup.atmos_format.strip() == 'marcs':
             setup.ts_input['MARCS-FILE'] = '.true.'
+            atmos.path = atmFile
+        elif  setup.atmos_format.strip() == 'stagger':
+            setup.ts_input['MARCS-FILE'] = '.false.'
             atmos.path = atmFile
         else:
             atmos.path = f"{setup.cwd}/{atmos.ID}.dat"
@@ -28,16 +31,17 @@ def runTSforOpac(args):
         " Run TS babsma script "
         compute_babsma(setup.ts_input, atmos, modelOpacFile, quite=setup.debug)
 
-        " Run TS bsyn script for line opacities"
-        # QUESTION: is that gonna do the trick?
-        # TODO: check input to TS regards to flags
-        setup.ts_input['MULTIDAMP'] = '.true.'
-        elementalAbundances = [] # this will assume TS internal solar mixture for now
-        specResultFile = './ignoreSpectrum.txt'
-        compute_bsyn(
-                    setup.ts_input, elementalAbundances, atmos, modelOpacFile,
-                    specResultFile, nlteInfoFile = None, quite = True
-                    )
+        if not skip_opacities:
+            " Run TS bsyn script for line opacities"
+            # QUESTION: is that gonna do the trick?
+            # TODO: check input to TS regards to flags
+            setup.ts_input['MULTIDUMP'] = '.true.'
+            #elementalAbundances = [] # this will assume TS internal solar mixture for now
+            specResultFile = f'./{atmos.ID}'
+            compute_bsyn(
+                        setup.ts_input, elementalAbundances, atmos, modelOpacFile,
+                        specResultFile, nlteInfoFile = None, quite = True
+                        )
 
 if __name__ == '__main__':
     if len(argv) > 2:
@@ -53,6 +57,6 @@ if __name__ == '__main__':
         setup.ncpu = 1
 
     ind = np.arange(len(setup.atmos_list))
-    args = [ [setup, ind[i::setup.ncpu]] for i in range(setup.ncpu)]
+    args = [ [setup, ind[i::setup.ncpu], False, []] for i in range(setup.ncpu)]
     with Pool(processes=setup.ncpu) as pool:
         pool.map(runTSforOpac, args )

@@ -1,31 +1,37 @@
-# config file used to setup TurboSpectrum (TS) run
+## config file used to setup TurboSpectrum (TS) run
 debug = 1
-# TS root directory
-ts_root = '/home/semenova/Turbospectrum2020'
-# list of model atmospheres to use
 
-# path to model atmospheres (in MARCS .mod format only for now)
-atmos_path = '/home/semenova/MARCS/all/'
+## TS root directory
+ts_root = "/u/peitner/Turbospectrum/Turbospectrum_NLTE"
 
-# 'm1d' or 'marcs'
-atmos_format = 'marcs'
+## list of model atmospheres to use
+atmos_list   = "/u/peitner/Turbospectrum/TurboSpectrum-Wrapper/example/models/TSO_list.in"
 
-atmos_list = 'MARCS_all.in'
+## path to model atmospheres 
+atmos_path = "/u/peitner/Turbospectrum/TurboSpectrum-Wrapper/example/models/"
 
-# path to the linelist(s)
-linelist = ['/home/semenova/plato-solar/line_data/nlte_ges_linelist.txt', '~/plato-solar/turbospectrum2020/DATA/Hlinedata', '/home/semenova/plato-solar/line_data/molecular_linelists_TSformat/*GESv5.bsyn']
-ncpu=2
+## 'm1d' or 'marcs' -> always Stagger for opacity tables
+atmos_format = "stagger"
 
-inputParams_file = 'input_param.txt'
-nlte_grids_path = './nlteGrids/'
-nlte_config = [ ]
-nlte_config = [ H : [ 'H/NLTEgrid_H_MARCS_May-10-2021.bin',  'H/auxData_H_MARCS_May-10-2021.txt, 'H/atom.h20'] ]
-nlte_config += [ Fe : [ 'Fe/NLTEgrid4TS_Fe_MARCS_May-07-2021.bin','Fe/auxData_Fe_MARCS_May-07-2021.dat', 'Fe/atom.fe607a'] ]
-nlte_config += [ Ba : [ 'Ba/NLTEgrid_Ba_MARCS_May-10-2021.bin', 'Ba/auxData_Ba_MARCS_May-10-2021.txt', 'Ba/atom.ba111' ] ]
+## path to the linelist(s)
+#linelist = ['/u/peitner/Turbospectrum/TSwrapperOpac/nlte_ges_linelist.txt', '/u/peitner/Turbospectrum/TSwrapperOpac/Hlinedata', '/u/peitner/Turbospectrum/TSwrapperOpac/*GESv5.bsyn']
+#linelist = ["/u/peitner/Turbospectrum/TSwrapperOpac/nlte_ges_linelist.txt", "/u/peitner/Turbospectrum/TSwrapperOpac/Hlinedata"]
+#linelist = ["/u/peitner/Turbospectrum/opacity_tables/tests/LINE-LISTS/ADDITIONAL-LISTS/vald_2490-25540.list", "/u/peitner/Turbospectrum/TSwrapperOpac/*GESv5.bsyn"]
+linelist = ["/u/peitner/Turbospectrum/opacity_tables/tests/LINE-LISTS/ADDITIONAL-LISTS/1000-2490-vald.list","/u/peitner/Turbospectrum/opacity_tables/tests/LINE-LISTS/ADDITIONAL-LISTS/vald_2490-25540.list"]
 
-# starting wavelenght, AA
-lam_start = 5700
-# last wavelenght, AA
-lam_end = 7000
-# resolution per wavelenght (R capital)
-resolution = 1000000
+## Dont use this for opacity tables
+#inputParams_file = 'input_param.txt'
+#nlte_grids_path = './nlteGrids/'
+#nlte_config = [ ]
+#nlte_config = [ H : [ 'H/NLTEgrid_H_MARCS_May-10-2021.bin',  'H/auxData_H_MARCS_May-10-2021.txt, 'H/atom.h20'] ]
+#nlte_config += [ Fe : [ 'Fe/NLTEgrid4TS_Fe_MARCS_May-07-2021.bin','Fe/auxData_Fe_MARCS_May-07-2021.dat', 'Fe/atom.fe607a'] ]
+#nlte_config += [ Ba : [ 'Ba/NLTEgrid_Ba_MARCS_May-10-2021.bin', 'Ba/auxData_Ba_MARCS_May-10-2021.txt', 'Ba/atom.ba111' ] ]
+
+## starting wavelenght, AA
+lam_start = 1000
+
+## last wavelenght, AA
+lam_end = 200000
+
+## resolution per wavelenght (R capital)
+resolution = 2500
