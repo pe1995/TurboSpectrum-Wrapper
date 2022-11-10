@@ -136,3 +136,5 @@ example/job.err*
 example/slurm-*
 example/garbage
 example/*.dat
+example/models/*.dat
+example/models/*.in
