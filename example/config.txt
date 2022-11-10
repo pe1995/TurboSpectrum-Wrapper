@@ -18,6 +18,8 @@ atmos_format = "stagger"
 #linelist = ["/u/peitner/Turbospectrum/TSwrapperOpac/nlte_ges_linelist.txt", "/u/peitner/Turbospectrum/TSwrapperOpac/Hlinedata"]
 #linelist = ["/u/peitner/Turbospectrum/opacity_tables/tests/LINE-LISTS/ADDITIONAL-LISTS/vald_2490-25540.list", "/u/peitner/Turbospectrum/TSwrapperOpac/*GESv5.bsyn"]
 linelist = ["/u/peitner/Turbospectrum/opacity_tables/tests/LINE-LISTS/ADDITIONAL-LISTS/1000-2490-vald.list","/u/peitner/Turbospectrum/opacity_tables/tests/LINE-LISTS/ADDITIONAL-LISTS/vald_2490-25540.list"]
+#linelist = []
+
 
 ## Dont use this for opacity tables
 #inputParams_file = 'input_param.txt'
@@ -31,7 +33,7 @@ linelist = ["/u/peitner/Turbospectrum/opacity_tables/tests/LINE-LISTS/ADDITIONAL
 lam_start = 1000
 
 ## last wavelenght, AA
-lam_end = 200000
+lam_end = 26000
 
 ## resolution per wavelenght (R capital)
 resolution = 2500

@@ -6,6 +6,7 @@ from multiprocessing import Pool
 from configure_setup import setup
 from run_ts import compute_babsma, compute_bsyn
 from atmos_package import model_atmosphere
+import time
 
 
 def runTSforOpac(args):
@@ -29,6 +30,8 @@ def runTSforOpac(args):
         modelOpacFile = f"{setup.cwd}_{atmos.id}_{setup.jobID}"
         # TODO: add specific keywords to ts_input and update TS to write requested opacities
         " Run TS babsma script "
+        
+        s = time.time()
         compute_babsma(setup.ts_input, atmos, modelOpacFile, quite=setup.debug)
 
         if not skip_opacities:
@@ -42,6 +45,8 @@ def runTSforOpac(args):
                         setup.ts_input, elementalAbundances, atmos, modelOpacFile,
                         specResultFile, nlteInfoFile = None, quite = True
                         )
+            e = time.time()
+            print(f"elapsed time: {e-s}")
 
 if __name__ == '__main__':
     if len(argv) > 2:
@@ -58,5 +63,6 @@ if __name__ == '__main__':
 
     ind = np.arange(len(setup.atmos_list))
     args = [ [setup, ind[i::setup.ncpu], False, []] for i in range(setup.ncpu)]
-    with Pool(processes=setup.ncpu) as pool:
-        pool.map(runTSforOpac, args )
+    #with Pool(processes=setup.ncpu) as pool:
+    #    pool.map(runTSforOpac, args )
+    runTSforOpac(args[0])
