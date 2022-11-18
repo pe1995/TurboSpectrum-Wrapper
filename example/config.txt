@@ -2,13 +2,13 @@
 debug = 1
 
 ## TS root directory
-ts_root = "/shared-storage/eitner/TS_opacity_tables/Turbospectrum_NLTE"
+ts_root = "/u/peitner/Turbospectrum/Turbospectrum_NLTE"
 
 ## list of model atmospheres to use
-atmos_list   = "/shared-storage/eitner/TS_opacity_tables/TurboSpectrum-Wrapper/example/models/TSO_list.in"
+atmos_list   = "/u/peitner/Turbospectrum/TurboSpectrum-Wrapper/example/models/TSO_list.in"
 
 ## path to model atmospheres 
-atmos_path = "/shared-storage/eitner/TS_opacity_tables/TurboSpectrum-Wrapper/example/models/"
+atmos_path = "/u/peitner/Turbospectrum/TurboSpectrum-Wrapper/example/models/"
 
 ## 'm1d' or 'marcs' -> always Stagger for opacity tables
 atmos_format = "stagger"
@@ -35,4 +35,6 @@ lam_start = 1000.0
 lam_end = 26000.0
 
 ## resolution per wavelenght (R capital)
-resolution = 25000
+resolution = 2500
+
+tmolim=20000.0
