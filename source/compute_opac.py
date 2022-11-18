@@ -62,7 +62,7 @@ if __name__ == '__main__':
         setup.ncpu = 1
 
     ind = np.arange(len(setup.atmos_list))
-    args = [ [setup, ind[i::setup.ncpu], False, []] for i in range(setup.ncpu)]
+    args = [ [setup, ind[i::setup.ncpu], True, []] for i in range(setup.ncpu)]
     #with Pool(processes=setup.ncpu) as pool:
     #    pool.map(runTSforOpac, args )
     runTSforOpac(args[0])

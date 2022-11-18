@@ -261,6 +261,11 @@ in the config file as 'atmos_format' ")
         self.ts_input['LAMBDA_STEP'] = self.wave_step
         self.ts_input['ts_root'] = self.ts_root
 
+        if "TMOLIM" in self.__dict__.keys():
+            self.ts_input['TMOLIM'] = self.TMOLIM
+        else:
+            self.ts_input['TMOLIM'] = 100000000.0
+
 
         """ Linelists """
         if type(self.linelist) == np.array or type(self.linelist) == np.ndarray:

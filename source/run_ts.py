@@ -43,6 +43,7 @@ def compute_babsma(ts_input, atmos, modelOpacFile, quite=True):
 'HELIUM     :'    '0.00'
 'R-PROCESS  :'    '0.00'
 'S-PROCESS  :'    '0.00'
+'TMOLIM     :'    '20000.0'
     """
 
     time0 = time.time()

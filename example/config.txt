@@ -2,13 +2,13 @@
 debug = 1
 
 ## TS root directory
-ts_root = "/shared-storage/eitner/TS_opacity_tables/Turbospectrum_NLTE"
+ts_root = "/u/peitner/Turbospectrum/Turbospectrum_NLTE"
 
 ## list of model atmospheres to use
-atmos_list   = "/shared-storage/eitner/TS_opacity_tables/TurboSpectrum-Wrapper/example/models/TSO_list.in"
+atmos_list   = "/u/peitner/Turbospectrum/TurboSpectrum-Wrapper/example/models/TSO_list.in"
 
 ## path to model atmospheres 
-atmos_path = "/shared-storage/eitner/TS_opacity_tables/TurboSpectrum-Wrapper/example/models/"
+atmos_path = "/u/peitner/Turbospectrum/TurboSpectrum-Wrapper/example/models/"
 
 ## 'm1d' or 'marcs' -> always Stagger for opacity tables
 atmos_format = "stagger"
@@ -17,10 +17,8 @@ atmos_format = "stagger"
 #linelist = ['/u/peitner/Turbospectrum/TSwrapperOpac/nlte_ges_linelist.txt', '/u/peitner/Turbospectrum/TSwrapperOpac/Hlinedata', '/u/peitner/Turbospectrum/TSwrapperOpac/*GESv5.bsyn']
 #linelist = ["/u/peitner/Turbospectrum/TSwrapperOpac/nlte_ges_linelist.txt", "/u/peitner/Turbospectrum/TSwrapperOpac/Hlinedata"]
 #linelist = ["/u/peitner/Turbospectrum/opacity_tables/tests/LINE-LISTS/ADDITIONAL-LISTS/vald_2490-25540.list", "/u/peitner/Turbospectrum/TSwrapperOpac/*GESv5.bsyn"]
-linelist = ["/u/peitner/Turbospectrum/opacity_tables/tests/LINE-LISTS/ADDITIONAL-LISTS/1000-2490-vald.list","/u/peitner/Turbospectrum/opacity_tables/tests/LINE-LISTS/ADDITIONAL-LISTS/vald_2490-25540.list"]
-#linelist = []
-
-linelist = ["/shared-storage/eitner/TS_opacity_tables/create_tables/LINE-LISTS/ADDITIONAL-LISTS/1000-2490-vald.list","/shared-storage/eitner/TS_opacity_tables/create_tables/LINE-LISTS/ADDITIONAL-LISTS/vald_2490-25540.list"]
+#linelist = ["/u/peitner/Turbospectrum/opacity_tables/tests/LINE-LISTS/ADDITIONAL-LISTS/1000-2490-vald.list","/u/peitner/Turbospectrum/opacity_tables/tests/LINE-LISTS/ADDITIONAL-LISTS/vald_2490-25540.list"]
+linelist = []
 
 ## Dont use this for opacity tables
 #inputParams_file = 'input_param.txt'
@@ -38,3 +36,5 @@ lam_end = 26000
 
 ## resolution per wavelenght (R capital)
 resolution = 2500
+
+tmolim=20000.0
